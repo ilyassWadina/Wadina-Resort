@@ -179,6 +179,11 @@ function fmt(n) {
   return (Number(n) || 0).toFixed(3);
 }
 
+function toNum(str) {
+  if (str == null) return NaN;
+  return parseFloat(String(str).trim().replace(",", "."));
+}
+
 const icons = {
   plus: `<svg class="icon" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>`,
   minus: `<svg class="icon" viewBox="0 0 24 24"><path d="M5 12h14"/></svg>`,
@@ -340,7 +345,7 @@ function renderLedger() {
         <button class="type-btn in-inactive" id="typeInBtn">Income +</button>
         <button class="type-btn out-inactive" id="typeOutBtn">Expense -</button>
       </div>
-      <input type="number" inputmode="decimal" id="ledgerAmount" placeholder="Amount (RO)" />
+      <input type="text" id="ledgerAmount" placeholder="Amount (RO)" />
       <input type="text" id="ledgerDesc" placeholder="Short description (e.g. groceries, salary...)" />
       <div id="ledgerError"></div>
       <button class="btn-primary" id="ledgerAddBtn">${icons.plus} Add to Ledger</button>
@@ -366,7 +371,7 @@ function renderLedger() {
     const amountEl = document.getElementById("ledgerAmount");
     const descEl = document.getElementById("ledgerDesc");
     const errorEl = document.getElementById("ledgerError");
-    const val = parseFloat(amountEl.value);
+    const val = toNum(amountEl.value);
     if (!val || val <= 0) {
       errorEl.innerHTML = `<div class="error-msg">Enter a valid number</div>`;
       return;
@@ -411,13 +416,13 @@ function renderStock(colName, items, placeholderName) {
     <div class="card">
       <input type="text" id="stockName" placeholder="${placeholderName}" />
       <div class="row-2">
-        <input type="number" inputmode="decimal" id="stockQty" placeholder="Quantity" />
+        <input type="text" id="stockQty" placeholder="Quantity" />
         <select id="stockUnit">
           ${UNITS.map(u => `<option value="${u}">${u}</option>`).join("")}
         </select>
       </div>
-      <input type="number" inputmode="decimal" id="stockMin" placeholder="Minimum level (optional - alerts when low)" />
-      <input type="number" inputmode="decimal" id="stockCost" placeholder="How much did you pay? RO (optional)" />
+      <input type="text" id="stockMin" placeholder="Minimum level (optional - alerts when low)" />
+      <input type="text" id="stockCost" placeholder="How much did you pay? RO (optional)" />
       <div id="stockMsg"></div>
       <button class="btn-primary" id="stockAddBtn">${icons.plus} Add to Stock</button>
     </div>
@@ -452,7 +457,7 @@ function renderStock(colName, items, placeholderName) {
       msgEl.innerHTML = `<div class="error-msg">Enter item name</div>`;
       return;
     }
-    const q = parseFloat(qtyEl.value);
+    const q = toNum(qtyEl.value);
     if (!qtyEl.value || isNaN(q) || q < 0) {
       msgEl.innerHTML = `<div class="error-msg">Enter quantity</div>`;
       return;
@@ -460,10 +465,10 @@ function renderStock(colName, items, placeholderName) {
     msgEl.innerHTML = "";
 
     const name = nameEl.value.trim();
-    const min = minEl.value ? parseFloat(minEl.value) : 0;
+    const min = minEl.value ? toNum(minEl.value) : 0;
     await addStockItem(colName, name, q, unitEl.value, min);
 
-    const c = parseFloat(costEl.value);
+    const c = toNum(costEl.value);
     if (costEl.value && !isNaN(c) && c > 0) {
       await addLedgerEntry("out", c, `Purchase: ${name}`);
       msgEl.innerHTML = `<div class="confirm-msg">Added ${fmt(c)} RO to the ledger as an expense</div>`;
