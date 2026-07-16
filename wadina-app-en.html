@@ -38,9 +38,9 @@
   .subtitle { font-size: 12.5px; color: #7a9e8f; letter-spacing: 1.5px; }
   .rule { height: 2px; width: 90px; background: #5FA88C; margin: 10px auto 0; border-radius: 2px; }
 
-  .tabs { display: flex; gap: 6px; background: #e6ddc9; padding: 5px; border-radius: 10px; margin-bottom: 22px; }
+  .tabs { display: flex; flex-wrap: wrap; gap: 6px; background: #e6ddc9; padding: 5px; border-radius: 10px; margin-bottom: 22px; }
   .tab-btn {
-    flex: 1; display: flex; align-items: center; justify-content: center; gap: 6px;
+    flex: 1 1 30%; min-width: 100px; display: flex; align-items: center; justify-content: center; gap: 6px;
     padding: 10px 4px; border-radius: 7px; border: none; cursor: pointer;
     font-size: 12.5px; font-weight: 700; background: transparent; color: #6b6152;
     transition: all 0.15s ease;
@@ -145,6 +145,7 @@
     <h1 class="ledger-title">Wadina Resort</h1>
     <div class="subtitle">Ledger &amp; Stock</div>
     <div class="rule"></div>
+    <div id="userNameBar" style="font-size:11.5px;color:#8a7f6e;margin-top:8px;"></div>
   </div>
 
   <div class="tabs" id="tabs">
@@ -152,6 +153,7 @@
     <button class="tab-btn" data-tab="kitchen">🍳 Kitchen Stock</button>
     <button class="tab-btn" data-tab="housekeeping">✨ Housekeeping Stock</button>
     <button class="tab-btn" data-tab="report">📊 Monthly Report</button>
+    <button class="tab-btn" data-tab="log">📋 Activity Log</button>
   </div>
 
   <div id="content">
@@ -180,7 +182,14 @@ const db = firebase.firestore();
 const LEDGER_COL = "wadina_ledger";
 const KITCHEN_COL = "wadina_stock_kitchen";
 const HOUSEKEEPING_COL = "wadina_stock_housekeeping";
+const LOG_COL = "wadina_activity_log";
 const UNITS = ["kg", "g", "L", "ml", "pc", "pack", "bag"];
+
+/* ====================== DELETE CODE ======================
+   Change this secret code to whatever you want. Only people who
+   know this code will be able to delete ledger entries or stock items.
+============================================================= */
+const DELETE_CODE = "2580";
 
 function fmt(n) {
   return (Number(n) || 0).toFixed(3);
@@ -189,6 +198,46 @@ function fmt(n) {
 function toNum(str) {
   if (str == null) return NaN;
   return parseFloat(String(str).trim().replace(",", "."));
+}
+
+function getUserName() {
+  return localStorage.getItem("wadina_user_name") || "";
+}
+
+function ensureUserName() {
+  let name = getUserName();
+  while (!name || !name.trim()) {
+    name = window.prompt("Please enter your full name to continue:");
+    if (name && name.trim()) {
+      localStorage.setItem("wadina_user_name", name.trim());
+    }
+  }
+  return name.trim();
+}
+
+async function logActivity(action, detail) {
+  try {
+    await db.collection(LOG_COL).add({
+      name: getUserName() || "Unknown",
+      action,
+      detail,
+      date: new Date().toISOString().slice(0, 10),
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+  } catch (e) {
+    console.error("log activity error", e);
+  }
+}
+
+async function confirmDeleteCode() {
+  const code = window.prompt("Enter the delete code to confirm:");
+  if (code === null) return false;
+  if (code !== DELETE_CODE) {
+    await logActivity("delete_denied", `${getUserName() || "Someone"} tried to delete with a wrong code`);
+    window.alert("Wrong code. Deletion cancelled.");
+    return false;
+  }
+  return true;
 }
 
 const icons = {
@@ -237,23 +286,40 @@ function listenStock(colName, setter) {
   }, err => console.error("stock listen error", err));
 }
 
-async function addLedgerEntry(type, amount, desc) {
+let activityLog = [];
+function listenLog() {
+  return db.collection(LOG_COL).orderBy("createdAt", "desc").limit(200).onSnapshot(snap => {
+    activityLog = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    if (currentTab === "log") render();
+  }, err => console.error("log listen error", err));
+}
+
+async function addLedgerEntry(type, amount, desc, department) {
   await db.collection(LEDGER_COL).add({
     type, amount, desc,
+    department: department || "general",
+    by: getUserName() || "Unknown",
     date: new Date().toISOString().slice(0, 10),
     createdAt: firebase.firestore.FieldValue.serverTimestamp()
   });
+  logActivity("add_transaction", `${getUserName()} added ${type === "in" ? "income" : "expense"} of ${fmt(amount)} RO (${desc})`);
 }
 
-async function removeLedgerEntry(id) {
+async function removeLedgerEntry(id, desc) {
+  if (!(await confirmDeleteCode())) return;
   await db.collection(LEDGER_COL).doc(id).delete();
+  logActivity("delete_transaction", `${getUserName()} deleted transaction: ${desc || id}`);
 }
 
 async function addStockItem(colName, name, qty, unit, min) {
-  return db.collection(colName).add({
+  const deptLabel = colName === KITCHEN_COL ? "Kitchen" : "Housekeeping";
+  const doc = await db.collection(colName).add({
     name, qty, unit, min,
+    by: getUserName() || "Unknown",
     createdAt: firebase.firestore.FieldValue.serverTimestamp()
   });
+  logActivity("add_stock", `${getUserName()} added ${deptLabel} item: ${name} (${qty} ${unit})`);
+  return doc;
 }
 
 async function adjustStockQty(colName, id, currentQty, delta) {
@@ -261,15 +327,19 @@ async function adjustStockQty(colName, id, currentQty, delta) {
   await db.collection(colName).doc(id).update({ qty: next });
 }
 
-async function removeStockItem(colName, id) {
+async function removeStockItem(colName, id, name) {
+  if (!(await confirmDeleteCode())) return;
+  const deptLabel = colName === KITCHEN_COL ? "Kitchen" : "Housekeeping";
   await db.collection(colName).doc(id).delete();
+  logActivity("delete_stock", `${getUserName()} deleted ${deptLabel} item: ${name || id}`);
 }
 
 function render() {
   if (currentTab === "ledger") renderLedger();
   else if (currentTab === "kitchen") renderStock(KITCHEN_COL, kitchenItems, "Item name (e.g. oil, flour...)");
   else if (currentTab === "housekeeping") renderStock(HOUSEKEEPING_COL, housekeepingItems, "Item name (e.g. soap, cleaner...)");
-  else renderReport();
+  else if (currentTab === "report") renderReport();
+  else renderLog();
 }
 
 const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
@@ -319,6 +389,35 @@ function renderReport() {
       </table>
     </div>`}
   `;
+}
+
+const ACTION_LABELS = {
+  add_transaction: "➕ Added transaction",
+  delete_transaction: "🗑️ Deleted transaction",
+  add_stock: "📦 Added stock item",
+  delete_stock: "🗑️ Deleted stock item",
+  delete_denied: "⚠️ Wrong delete code"
+};
+
+function renderLog() {
+  contentEl.innerHTML = `
+    <div class="list-label">Activity Log (${activityLog.length})</div>
+    ${activityLog.length === 0 ? `<div class="empty-msg">No activity yet.</div>` : `
+    <div id="logList"></div>`}
+  `;
+  const listEl = document.getElementById("logList");
+  if (!listEl) return;
+  listEl.innerHTML = activityLog.map(l => `
+    <div class="entry-row">
+      <div class="entry-left">
+        <div class="dot ${l.action === 'delete_denied' ? 'out' : 'in'}"></div>
+        <div>
+          <div class="entry-desc">${escapeHtml(l.detail || ACTION_LABELS[l.action] || l.action)}</div>
+          <div class="entry-date">${l.name ? escapeHtml(l.name) + " · " : ""}${l.date || ""}</div>
+        </div>
+      </div>
+    </div>
+  `).join("");
 }
 
 function renderLedger() {
@@ -396,7 +495,7 @@ function renderLedger() {
         <div class="dot ${e.type}"></div>
         <div>
           <div class="entry-desc">${escapeHtml(e.desc)}</div>
-          <div class="entry-date">${e.date || ""}</div>
+          <div class="entry-date">${e.date || ""}${e.by ? " · " + escapeHtml(e.by) : ""}</div>
         </div>
       </div>
       <div class="entry-right">
@@ -406,14 +505,27 @@ function renderLedger() {
     </div>
   `).join("");
   listEl.querySelectorAll("[data-remove]").forEach(btn => {
-    btn.onclick = () => removeLedgerEntry(btn.dataset.remove);
+    btn.onclick = () => {
+      const entry = ledgerEntries.find(e => e.id === btn.dataset.remove);
+      removeLedgerEntry(btn.dataset.remove, entry ? entry.desc : "");
+    };
   });
 }
 
 function renderStock(colName, items, placeholderName) {
   const lowStock = items.filter(it => it.min > 0 && it.qty <= it.min);
+  const dept = colName === KITCHEN_COL ? "kitchen" : "housekeeping";
+  const deptLabel = colName === KITCHEN_COL ? "Kitchen" : "Housekeeping";
+  const totalSpent = ledgerEntries
+    .filter(e => e.type === "out" && e.department === dept)
+    .reduce((s, e) => s + e.amount, 0);
 
   contentEl.innerHTML = `
+    <div class="card balance-card" style="padding:16px 20px;">
+      <div class="balance-label">Total Spent on ${deptLabel}</div>
+      <div class="balance-value" style="color:#7A2E2E;font-size:28px;">${fmt(totalSpent)} <span class="unit">RO</span></div>
+    </div>
+
     ${lowStock.length > 0 ? `
       <div class="low-banner">
         ${icons.warn}
@@ -477,7 +589,8 @@ function renderStock(colName, items, placeholderName) {
 
     const c = toNum(costEl.value);
     if (costEl.value && !isNaN(c) && c > 0) {
-      await addLedgerEntry("out", c, `Purchase: ${name}`);
+      const dept = colName === KITCHEN_COL ? "kitchen" : "housekeeping";
+      await addLedgerEntry("out", c, `Purchase: ${name}`, dept);
       msgEl.innerHTML = `<div class="confirm-msg">Added ${fmt(c)} RO to the ledger as an expense</div>`;
       setTimeout(() => { msgEl.innerHTML = ""; }, 3000);
     }
@@ -520,7 +633,10 @@ function renderStock(colName, items, placeholderName) {
     btn.onclick = () => adjustStockQty(colName, btn.dataset.plus, parseFloat(btn.dataset.qty), 1);
   });
   listEl.querySelectorAll("[data-remove]").forEach(btn => {
-    btn.onclick = () => removeStockItem(colName, btn.dataset.remove);
+    btn.onclick = () => {
+      const item = items.find(i => i.id === btn.dataset.remove);
+      removeStockItem(colName, btn.dataset.remove, item ? item.name : "");
+    };
   });
 }
 
@@ -530,10 +646,31 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+// Ask for the user's name before anything else
+ensureUserName();
+
+function updateUserNameBar() {
+  const bar = document.getElementById("userNameBar");
+  if (bar) {
+    bar.innerHTML = `Signed in as <b>${escapeHtml(getUserName())}</b> · <a href="#" id="changeNameLink" style="color:#7a9e8f;">not you?</a>`;
+    const link = document.getElementById("changeNameLink");
+    if (link) {
+      link.onclick = (e) => {
+        e.preventDefault();
+        localStorage.removeItem("wadina_user_name");
+        ensureUserName();
+        updateUserNameBar();
+      };
+    }
+  }
+}
+updateUserNameBar();
+
 // Start real-time listeners
 unsubscribers.push(listenLedger());
 unsubscribers.push(listenStock(KITCHEN_COL, (v) => kitchenItems = v));
 unsubscribers.push(listenStock(HOUSEKEEPING_COL, (v) => housekeepingItems = v));
+unsubscribers.push(listenLog());
 </script>
 </body>
 </html>
